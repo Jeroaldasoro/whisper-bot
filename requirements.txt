@@ -1,4 +1,2 @@
 python-telegram-bot==22.5
-faster-whisper
-sumy
-nltk
+httpx

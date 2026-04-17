@@ -1,18 +1,12 @@
 import tempfile
 import os
-from faster_whisper import WhisperModel
+import httpx
 from telegram import Update
 from telegram.ext import Application, MessageHandler, filters, ContextTypes
-from sumy.parsers.plaintext import PlaintextParser
-from sumy.nlp.tokenizers import Tokenizer
-from sumy.summarizers.lsa import LsaSummarizer
 
 TOKEN = os.environ["BOT_TOKEN"]
+GROQ_API_KEY = os.environ["GROQ_API_KEY"]
 ALLOWED_USERS = {237456436, 770149239}
-
-print("Cargando modelo Whisper...")
-model = WhisperModel("base", device="cpu", compute_type="int8")
-print("Listo.")
 
 ultima_transcripcion = {}
 
@@ -32,8 +26,17 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await file.download_to_drive(tmp_path)
 
     try:
-        segments, _ = model.transcribe(tmp_path, language="es")
-        texto = " ".join([s.text for s in segments]).strip()
+        with open(tmp_path, "rb") as audio_file:
+            async with httpx.AsyncClient() as client:
+                response = await client.post(
+                    "https://api.groq.com/openai/v1/audio/transcriptions",
+                    headers={"Authorization": f"Bearer {GROQ_API_KEY}"},
+                    files={"file": ("audio.ogg", audio_file, "audio/ogg")},
+                    data={"model": "whisper-large-v3", "language": "es"},
+                    timeout=60,
+                )
+        response.raise_for_status()
+        texto = response.json()["text"].strip()
         ultima_transcripcion[update.effective_user.id] = texto
         await update.message.reply_text(f"Transcripcion:\n\n{texto}\n\nEscribi RESUMIR para obtener un resumen.")
     except Exception as e:
@@ -55,12 +58,20 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         try:
-            parser = PlaintextParser.from_string(texto, Tokenizer("spanish"))
-            summarizer = LsaSummarizer()
-            sentences = summarizer(parser.document, 3)
-            resumen = " ".join([str(s) for s in sentences])
-            if not resumen.strip():
-                resumen = texto[:500] + ("..." if len(texto) > 500 else "")
+            async with httpx.AsyncClient() as client:
+                response = await client.post(
+                    "https://api.groq.com/openai/v1/chat/completions",
+                    headers={"Authorization": f"Bearer {GROQ_API_KEY}"},
+                    json={
+                        "model": "llama3-8b-8192",
+                        "messages": [
+                            {"role": "user", "content": f"Resume este texto en 3 oraciones cortas en español:\n\n{texto}"}
+                        ],
+                    },
+                    timeout=30,
+                )
+            response.raise_for_status()
+            resumen = response.json()["choices"][0]["message"]["content"].strip()
             await update.message.reply_text(f"Resumen:\n\n{resumen}")
         except Exception as e:
             await update.message.reply_text(f"Error al resumir: {e}")
